@@ -82,7 +82,7 @@ public class QuicPingTestJava {
 
     @Test
     void keyPairGeneration() {
-        Pair<PrivKey, PubKey> pair = KeyKt.generateKeyPair(KEY_TYPE.SECP256K1);
+        Pair<PrivKey, PubKey> pair = KeyKt.generateKeyPair(KeyType.SECP256K1);
         PeerId peerId = PeerId.fromPubKey(pair.component2());
         System.out.println("PeerId: " + peerId.toHex());
     }

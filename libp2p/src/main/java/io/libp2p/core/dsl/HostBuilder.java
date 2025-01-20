@@ -1,7 +1,8 @@
 package io.libp2p.core.dsl;
 
 import io.libp2p.core.Host;
-import io.libp2p.core.crypto.*;
+import io.libp2p.core.crypto.KeyType;
+import io.libp2p.core.crypto.PrivKey;
 import io.libp2p.core.multistream.ProtocolBinding;
 import io.libp2p.core.mux.*;
 import io.libp2p.core.security.SecureChannel;
@@ -80,7 +81,7 @@ public class HostBuilder {
         defaultMode_.asBuilderDefault(),
         b -> {
           IdentityBuilder identity = b.getIdentity();
-                identity.random(KEY_TYPE.ED25519);
+                identity.random(KeyType.ED25519);
                 PrivKey peerId = identity.getFactory().invoke();
                 identity.setFactory(() -> peerId);
 
