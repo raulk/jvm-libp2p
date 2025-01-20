@@ -41,8 +41,6 @@ class BlobDecouplingSimulation(
     val randomSeed: Long = 3L,
     val rnd: Random = Random(randomSeed),
 
-    val floodPublish: Boolean = true,
-
     val sendingPeerBand: Bandwidth = Bandwidth.mbitsPerSec(100),
 
     val peerBands: Iterator<Bandwidth> = iterator {
@@ -83,10 +81,6 @@ class BlobDecouplingSimulation(
     )
 
     val gossipParams = Eth2DefaultGossipParams
-        .copy(
-//            heartbeatInterval = 1.minutes
-            floodPublish = floodPublish
-        )
     val gossipScoreParams = Eth2DefaultScoreParams
     val gossipRouterCtor = { _: Int ->
         SimGossipRouterBuilder().also {
@@ -135,7 +129,6 @@ class BlobDecouplingSimulation(
     }
 
     fun testOnlyBlockDecoupled() {
-
         for (i in 0 until messageCount) {
             val sendingPeer = sendingPeerIndexes[i]
             logger("Sending message $i from peer $sendingPeer")
@@ -153,7 +146,6 @@ class BlobDecouplingSimulation(
     }
 
     fun testAllDecoupled() {
-
         for (i in 0 until messageCount) {
             val sendingPeer = sendingPeerIndexes[i]
             logger("Sending message $i from peer $sendingPeer")
@@ -262,7 +254,7 @@ class BlobDecouplingSimulation(
 fun main() {
     val bandwidths = bandwidthDistributions.entries.toList()
         .let {
-            listOf(/*it[0],*/ it[2])
+            listOf(it[2])
         }.toMap()
     val slowBandwidth = Bandwidth.mbitsPerSec(10)
 
@@ -281,8 +273,11 @@ fun main() {
             val groupedDelays = sim.simulation.gatherPubDeliveryStats()
                 .aggregateSlowestByPublishTime()
                 .groupBy {
-                    if (it.toPeer.inboundBandwidth.totalBandwidth == slowBandwidth)
-                        "Slow" else "Fast"
+                    if (it.toPeer.inboundBandwidth.totalBandwidth == slowBandwidth) {
+                        "Slow"
+                    } else {
+                        "Fast"
+                    }
                 }
                 .mapValues { it.value.deliveryDelays }
             return GroupByRangeAggregator(groupedDelays)
@@ -293,7 +288,6 @@ fun main() {
 //                logger = {},
                 nodeCount = 1000,
                 peerBands = band,
-                floodPublish = false,
 //                randomSeed = 2
             )
 

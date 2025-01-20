@@ -17,8 +17,6 @@ import java.util.Collections.singletonList
 import java.util.Optional
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ScheduledExecutorService
-import java.util.function.BiConsumer
-import java.util.function.Consumer
 
 // 1 MB default max message size
 const val DEFAULT_MAX_PUBSUB_MESSAGE_SIZE = 1 shl 20
@@ -87,7 +85,6 @@ abstract class AbstractRouter(
 
     /**
      * Flushes all pending message parts for all peers
-     * @see addPendingRpcPart
      */
     protected fun flushAllPending() {
         pendingRpcParts.pendingPeers.forEach(::flushPending)
@@ -165,7 +162,7 @@ abstract class AbstractRouter(
 
         // Validate message
         if (!validateMessageListLimits(msg)) {
-            logger.debug("Dropping msg with lists exceeding limits from peer $peer")
+            logger.debug("Dropping msg with lists exceeding limits from peer {}", peer)
             return
         }
 
@@ -175,7 +172,7 @@ abstract class AbstractRouter(
                 .filterIncomingSubscriptions(subscriptions, peersTopics.getByFirst(peer))
                 .forEach { handleMessageSubscriptions(peer, it) }
         } catch (e: Exception) {
-            logger.debug("Subscription filter error, ignoring message from peer $peer", e)
+            logger.debug("Subscription filter error, ignoring message from peer {}", peer, e)
             return
         }
 
@@ -184,7 +181,7 @@ abstract class AbstractRouter(
         }
 
         val (msgSubscribed, nonSubscribed) = msg.publishList
-            .partition { it.topicIDsList.any { it in subscribedTopics } }
+            .partition { rpcMsg -> rpcMsg.topicIDsList.any { it in subscribedTopics } }
 
         nonSubscribed.forEach { notifyNonSubscribedMessage(peer, it) }
 
@@ -194,7 +191,7 @@ abstract class AbstractRouter(
                 val validationResult = seenMessages[subscribedMessage]
                 if (validationResult != null) {
                     // Message has been seen
-                    notifySeenMessage(peer, seenMessages.getSeenMessage(subscribedMessage), validationResult)
+                    notifySeenMessage(peer, seenMessages.getSeenMessageCached(subscribedMessage), validationResult)
                     false
                 } else {
                     // Message is unseen
@@ -209,7 +206,7 @@ abstract class AbstractRouter(
                 messageValidator.validate(it)
                 true
             } catch (e: Exception) {
-                logger.debug("Invalid pubsub message from peer $peer: $it", e)
+                logger.debug("Invalid pubsub message from peer {}: {}", peer, it, e)
                 seenMessages[it] = Optional.of(ValidationResult.Invalid)
                 notifyUnseenInvalidMessage(peer, it)
                 false
@@ -223,7 +220,7 @@ abstract class AbstractRouter(
 
         validFuts.forEach { (msg, validationFut) ->
             validationFut.thenAcceptAsync(
-                Consumer { res ->
+                { res ->
                     seenMessages[msg] = Optional.of(res)
                     if (res == ValidationResult.Invalid) notifyUnseenInvalidMessage(peer, msg)
                 },
@@ -247,11 +244,19 @@ abstract class AbstractRouter(
         // broadcast others on completion
         undone.forEach {
             it.second.whenCompleteAsync(
-                BiConsumer { res, err ->
+                { res, err ->
                     when {
                         err != null -> logger.warn("Exception while handling message from peer $peer: ${it.first}", err)
-                        res == ValidationResult.Invalid -> logger.debug("Invalid pubsub message from peer $peer: ${it.first}")
-                        res == ValidationResult.Ignore -> logger.trace("Ignoring pubsub message from peer $peer: ${it.first}")
+                        res == ValidationResult.Invalid -> logger.debug(
+                            "Invalid pubsub message from peer {}: {}",
+                            peer,
+                            it.first
+                        )
+                        res == ValidationResult.Ignore -> logger.trace(
+                            "Ignoring pubsub message from peer {}: {}",
+                            peer,
+                            it.first
+                        )
                         else -> {
                             newValidatedMessages(singletonList(it.first), peer)
                             flushAllPending()
@@ -275,15 +280,15 @@ abstract class AbstractRouter(
 
     override fun onPeerWireException(peer: PeerHandler?, cause: Throwable) {
         // exception occurred in protobuf decoders
-        logger.debug("Malformed message from $peer : $cause")
+        logger.debug("Malformed message from {} : {}", peer, cause)
         peer?.also { notifyMalformedMessage(it) }
     }
 
     override fun onServiceException(peer: PeerHandler?, msg: Any?, cause: Throwable) {
         if (cause is BadPeerException) {
-            logger.debug("Remote peer ($peer) misbehaviour on message $msg: $cause")
+            logger.debug("Remote peer ({}) misbehaviour on message {} : {}", peer, msg, cause)
         } else {
-            logger.warn("AbstractRouter internal error on message $msg from peer $peer", cause)
+            logger.warn("AbstractRouter internal error on message {} from peer {}", msg, peer, cause)
         }
     }
 
@@ -323,7 +328,11 @@ abstract class AbstractRouter(
 
     override fun getPeerTopics(): CompletableFuture<Map<PeerId, Set<Topic>>> {
         return submitOnEventThread {
-            peersTopics.asFirstToSecondMap().mapKeys { it.key.peerId }
+            peersTopics.asFirstToSecondMap()
+                .map { (key, value) ->
+                    key.peerId to value.toSet()
+                }
+                .toMap()
         }
     }
 

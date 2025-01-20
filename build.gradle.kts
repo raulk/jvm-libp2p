@@ -1,26 +1,26 @@
+import com.diffplug.gradle.spotless.SpotlessExtension
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
-import java.net.URL
-
+import java.net.URI
 // To publish the release artifact to CloudSmith repo run the following :
 // ./gradlew publish -PcloudsmithUser=<user> -PcloudsmithApiKey=<api-key>
 
-description = "a minimal implementation of libp2p for the jvm"
+description = "a libp2p implementation for the JVM, written in Kotlin"
 
 plugins {
     val kotlinVersion = "1.6.21"
 
     id("org.jetbrains.kotlin.jvm") version kotlinVersion apply false
 
-    id("com.github.ben-manes.versions").version("0.44.0")
+    id("com.github.ben-manes.versions").version("0.51.0")
     id("idea")
     id("io.gitlab.arturbosch.detekt").version("1.22.0")
     id("java")
     id("maven-publish")
-    id("org.jetbrains.dokka").version("1.7.20")
-    id("org.jmailen.kotlinter").version("3.10.0")
+    id("org.jetbrains.dokka").version("1.9.20")
+    id("com.diffplug.spotless").version("6.25.0")
     id("java-test-fixtures")
-    id("io.spring.dependency-management").version("1.1.0")
+    id("io.spring.dependency-management").version("1.1.6")
 
     id("org.jetbrains.kotlin.android") version kotlinVersion apply false
     id("com.android.application") version "7.4.2" apply false
@@ -45,7 +45,7 @@ configure(
     apply(plugin = "io.gitlab.arturbosch.detekt")
     apply(plugin = "maven-publish")
     apply(plugin = "org.jetbrains.dokka")
-    apply(plugin = "org.jmailen.kotlinter")
+    apply(plugin = "com.diffplug.spotless")
     apply(plugin = "java-test-fixtures")
     apply(plugin = "io.spring.dependency-management")
     apply(from = "$rootDir/versions.gradle")
@@ -57,7 +57,6 @@ configure(
 
         implementation("com.google.guava:guava")
         implementation("org.slf4j:slf4j-api")
-        implementation("com.github.multiformats:java-multibase:v1.1.1")
 
         testFixturesImplementation("com.google.guava:guava")
         testFixturesImplementation("org.slf4j:slf4j-api")
@@ -108,8 +107,25 @@ configure(
 //    Runtime.getRuntime().availableProcessors().div(2))
     }
 
-    kotlinter {
-        disabledRules = arrayOf("no-wildcard-imports", "enum-entry-name-case")
+    configure<SpotlessExtension> {
+        kotlin {
+            ktlint().editorConfigOverride(
+                mapOf(
+                    "ktlint_standard_no-wildcard-imports" to "disabled",
+                    "ktlint_standard_enum-entry-name-case" to "disabled",
+                    "ktlint_standard_trailing-comma-on-call-site" to "disabled",
+                    "ktlint_standard_trailing-comma-on-declaration-site" to "disabled",
+                    "ktlint_standard_value-parameter-comment" to "disabled",
+                    "ktlint_standard_value-argument-comment" to "disabled",
+                    "ktlint_standard_property-naming" to "disabled",
+                    "ktlint_standard_function-naming" to "disabled"
+                )
+            )
+        }
+        java {
+            targetExclude("**/generated/**/proto/**")
+            googleJavaFormat()
+        }
     }
 
     val sourcesJar by tasks.registering(Jar::class) {
@@ -118,13 +134,13 @@ configure(
     }
 
     tasks.dokkaHtml.configure {
-        outputDirectory.set(buildDir.resolve("dokka"))
+        outputDirectory.set(getLayout().buildDirectory.dir("dokka"))
         dokkaSourceSets {
             configureEach {
                 jdkVersion.set(11)
                 reportUndocumented.set(false)
                 externalDocumentationLink {
-                    url.set(URL("https://netty.io/4.1/api/"))
+                    url.set(URI.create("https://netty.io/4.1/api/").toURL())
                 }
             }
         }
@@ -153,6 +169,14 @@ configure(
             publications {
                 register("mavenJava", MavenPublication::class) {
                     from(components["java"])
+                    versionMapping {
+                        usage("java-api") {
+                            fromResolutionOf("runtimeClasspath")
+                        }
+                        usage("java-runtime") {
+                            fromResolutionResult()
+                        }
+                    }
                     artifact(sourcesJar.get())
                     artifact(dokkaJar.get())
                     groupId = "io.libp2p"

@@ -10,8 +10,8 @@ import pubsub.pb.Rpc
 
 interface GossipRpcPartsQueue : RpcPartsQueue {
 
-    fun addIHave(messageId: MessageId)
-    fun addIHaves(messageIds: Collection<MessageId>) = messageIds.forEach { addIHave(it) }
+    fun addIHave(messageId: MessageId, topic: Topic)
+    fun addIHaves(messageIds: Collection<MessageId>, topic: Topic) = messageIds.forEach { addIHave(it, topic) }
     fun addIWant(messageId: MessageId)
     fun addIWants(messageIds: Collection<MessageId>) = messageIds.forEach { addIWant(it) }
 
@@ -21,6 +21,7 @@ interface GossipRpcPartsQueue : RpcPartsQueue {
      * Gossip 1.0 variant
      */
     fun addPrune(topic: Topic)
+
     /**
      * Gossip 1.1 variant
      */
@@ -36,14 +37,13 @@ open class DefaultGossipRpcPartsQueue(
     private val params: GossipParams
 ) : DefaultRpcPartsQueue(), GossipRpcPartsQueue {
 
-    protected data class IHavePart(val messageId: MessageId) : AbstractPart {
+    protected data class IHavePart(val messageId: MessageId, val topic: Topic) : AbstractPart {
         override fun appendToBuilder(builder: Rpc.RPC.Builder) {
             val ctrlBuilder = builder.controlBuilder
-            val iHaveBuilder = if (ctrlBuilder.ihaveBuilderList.isEmpty()) {
-                ctrlBuilder.addIhaveBuilder()
-            } else {
-                ctrlBuilder.getIhaveBuilder(0)
-            }
+            val iHaveBuilder = ctrlBuilder.ihaveBuilderList
+                .find { it.topicID == topic }
+                ?: ctrlBuilder.addIhaveBuilder().setTopicID(topic)
+
             iHaveBuilder.addMessageIDs(messageId.toProtobuf())
         }
     }
@@ -81,8 +81,8 @@ open class DefaultGossipRpcPartsQueue(
         }
     }
 
-    override fun addIHave(messageId: MessageId) {
-        addPart(IHavePart(messageId))
+    override fun addIHave(messageId: MessageId, topic: Topic) {
+        addPart(IHavePart(messageId, topic))
     }
 
     override fun addIWant(messageId: MessageId) {
@@ -118,7 +118,6 @@ open class DefaultGossipRpcPartsQueue(
                 publishCount > 0 && subscriptionCount > 0 && iHaveCount > 0 &&
                 iWantCount > 0 && graftCount > 0 && pruneCount > 0
             ) {
-
                 val part = parts[partIdx++]
                 when (part) {
                     is PublishPart -> publishCount--

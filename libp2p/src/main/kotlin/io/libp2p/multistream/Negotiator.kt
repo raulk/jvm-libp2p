@@ -94,8 +94,11 @@ object Negotiator {
 
         override fun channelRead0(ctx: ChannelHandlerContext, msg: String) {
             if (msg == MULTISTREAM_PROTO) {
-                if (!headerRead) headerRead = true else
+                if (!headerRead) {
+                    headerRead = true
+                } else {
                     throw ProtocolNegotiationException("Received multistream header more than once")
+                }
             } else {
                 processMsg(ctx, msg)?.also { completeEvent ->
                     // first fire event to setup a handler for selected protocol
@@ -103,7 +106,7 @@ object Negotiator {
                     ctx.pipeline().remove(this@GenericHandler)
                     // DelimiterBasedFrameDecoder should be removed last since it
                     // propagates unhandled bytes on removal
-                    prehandlers.reversed().forEach { ctx.pipeline().remove(it) }
+                    prehandlers.asReversed().forEach { ctx.pipeline().remove(it) }
                     // activate a handler for selected protocol
                     ctx.fireChannelActive()
                 }

@@ -19,6 +19,14 @@ fun <C> CompletableFuture<C>.bind(result: CompletableFuture<out C>) {
 
 fun <C> CompletableFuture<C>.forward(forwardTo: CompletableFuture<in C>) = forwardTo.bind(this)
 
+fun <C, R> CompletableFuture<C>.forwardException(forwardTo: CompletableFuture<R>): CompletableFuture<C> {
+    return whenComplete { _, t ->
+        if (t != null) {
+            forwardTo.completeExceptionally(t)
+        }
+    }
+}
+
 /**
  * The same as [CompletableFuture.get] but unwraps [ExecutionException]
  */
@@ -61,16 +69,19 @@ fun <C> anyComplete(all: List<CompletableFuture<C>>): CompletableFuture<C> =
     anyComplete(*all.toTypedArray())
 
 fun <C> anyComplete(vararg all: CompletableFuture<C>): CompletableFuture<C> {
-    return if (all.isEmpty()) completedExceptionally(NothingToCompleteException())
-    else object : CompletableFuture<C>() {
-        init {
-            val counter = AtomicInteger(all.size)
-            all.forEach {
-                it.whenComplete { v, t ->
-                    if (t == null) {
-                        complete(v)
-                    } else if (counter.decrementAndGet() == 0) {
-                        completeExceptionally(NonCompleteException(t))
+    return if (all.isEmpty()) {
+        completedExceptionally(NothingToCompleteException())
+    } else {
+        object : CompletableFuture<C>() {
+            init {
+                val counter = AtomicInteger(all.size)
+                all.forEach {
+                    it.whenComplete { v, t ->
+                        if (t == null) {
+                            complete(v)
+                        } else if (counter.decrementAndGet() == 0) {
+                            completeExceptionally(NonCompleteException(t))
+                        }
                     }
                 }
             }

@@ -9,6 +9,7 @@ import io.libp2p.etc.types.toHex
 import io.libp2p.etc.util.netty.mux.RemoteWriteClosed
 import io.libp2p.etc.util.netty.nettyInitializer
 import io.libp2p.mux.MuxHandlerAbstractTest.AbstractTestMuxFrame.Flag.*
+import io.libp2p.mux.MuxHandlerAbstractTest.TestEventHandler
 import io.libp2p.tools.TestChannel
 import io.libp2p.tools.readAllBytesAndRelease
 import io.netty.buffer.ByteBuf
@@ -20,10 +21,7 @@ import io.netty.handler.logging.LoggingHandler
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.data.Index
 import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertThrows
-import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletableFuture
@@ -38,9 +36,14 @@ abstract class MuxHandlerAbstractTest {
     val parentChannelId get() = ech.id()
 
     val allocatedBufs = mutableListOf<ByteBuf>()
+    val activeEventHandlers = mutableListOf<TestEventHandler>()
+    val isLocalConnectionInitiator = true
 
     abstract val maxFrameDataLength: Int
     abstract fun createMuxHandler(streamHandler: StreamHandler<*>): MuxHandler
+
+    abstract val localMuxIdGenerator: Iterator<Long>
+    abstract val remoteMuxIdGenerator: Iterator<Long>
 
     fun createTestStreamHandler(): StreamHandler<TestHandler> =
         StreamHandler { stream ->
@@ -70,11 +73,14 @@ abstract class MuxHandlerAbstractTest {
             }
         multistreamHandler = createMuxHandler(streamHandler)
 
-        ech = TestChannel("test", true, LoggingHandler(LogLevel.ERROR), multistreamHandler)
+        ech = TestChannel("test", isLocalConnectionInitiator, LoggingHandler(LogLevel.ERROR), multistreamHandler)
     }
 
     @AfterEach
     open fun cleanUpAndCheck() {
+        childHandlers.forEach {
+            assertThat(it.exceptions).isEmpty()
+        }
         childHandlers.clear()
 
         allocatedBufs.forEach {
@@ -94,13 +100,17 @@ abstract class MuxHandlerAbstractTest {
     abstract fun writeFrame(frame: AbstractTestMuxFrame)
     abstract fun readFrame(): AbstractTestMuxFrame?
     fun readFrameOrThrow() = readFrame() ?: throw AssertionError("No outbound frames")
-
-    fun openStream(id: Long) = writeFrame(AbstractTestMuxFrame(id, Open))
+    fun openStreamRemote(id: Long) = writeFrame(AbstractTestMuxFrame(id, Open))
+    fun openStreamRemote(): Long {
+        val id = remoteMuxIdGenerator.next()
+        openStreamRemote(id)
+        return id
+    }
     fun writeStream(id: Long, msg: String) = writeFrame(AbstractTestMuxFrame(id, Data, msg))
     fun closeStream(id: Long) = writeFrame(AbstractTestMuxFrame(id, Close))
     fun resetStream(id: Long) = writeFrame(AbstractTestMuxFrame(id, Reset))
 
-    fun openStreamByLocal(): TestHandler {
+    fun openStreamLocal(): TestHandler {
         val handlerFut = multistreamHandler.createStream(createTestStreamHandler()).controller
         ech.runPendingTasks()
         return handlerFut.get()
@@ -113,6 +123,8 @@ abstract class MuxHandlerAbstractTest {
         return buf
     }
 
+    protected fun allocateMessage(hexBytes: String) = hexBytes.fromHex().toByteBuf(allocateBuf())
+
     fun assertHandlerCount(count: Int) = assertEquals(count, childHandlers.size)
     fun assertLastMessage(handler: Int, msgCount: Int, msg: String) {
         val messages = childHandlers[handler].inboundMessages
@@ -122,58 +134,57 @@ abstract class MuxHandlerAbstractTest {
 
     @Test
     fun singleStream() {
-        openStream(12)
+        val id1 = openStreamRemote()
         assertHandlerCount(1)
         assertTrue(childHandlers[0].isActivated)
 
-        writeStream(12, "22")
+        writeStream(id1, "22")
         assertHandlerCount(1)
         assertEquals(1, childHandlers[0].inboundMessages.size)
         assertEquals("22", childHandlers[0].inboundMessages.last())
 
-        writeStream(12, "44")
+        writeStream(id1, "44")
         assertHandlerCount(1)
         assertEquals(2, childHandlers[0].inboundMessages.size)
         assertEquals("44", childHandlers[0].inboundMessages.last())
 
-        writeStream(12, "66")
+        writeStream(id1, "66")
         assertHandlerCount(1)
         assertEquals(3, childHandlers[0].inboundMessages.size)
         assertEquals("66", childHandlers[0].inboundMessages.last())
 
         assertFalse(childHandlers[0].isInactivated)
-        assertTrue(childHandlers[0].exceptions.isEmpty())
     }
 
     @Test
     fun `test that readComplete event is fired to child channel`() {
-        openStream(12)
+        val id1 = openStreamRemote()
 
         assertThat(childHandlers[0].readCompleteEventCount).isZero()
 
-        writeStream(12, "22")
+        writeStream(id1, "22")
 
         assertThat(childHandlers[0].readCompleteEventCount).isEqualTo(1)
 
-        writeStream(12, "23")
+        writeStream(id1, "23")
 
         assertThat(childHandlers[0].readCompleteEventCount).isEqualTo(2)
     }
 
     @Test
     fun `test that readComplete event is fired to reading channels only`() {
-        openStream(12)
-        openStream(13)
+        val id1 = openStreamRemote()
+        val id2 = openStreamRemote()
 
         assertThat(childHandlers[0].readCompleteEventCount).isZero()
         assertThat(childHandlers[1].readCompleteEventCount).isZero()
 
-        writeStream(12, "22")
+        writeStream(id1, "22")
 
         assertThat(childHandlers[0].readCompleteEventCount).isEqualTo(1)
         assertThat(childHandlers[1].readCompleteEventCount).isEqualTo(0)
 
-        writeStream(13, "23")
+        writeStream(id2, "23")
 
         assertThat(childHandlers[0].readCompleteEventCount).isEqualTo(1)
         assertThat(childHandlers[1].readCompleteEventCount).isEqualTo(1)
@@ -181,116 +192,111 @@ abstract class MuxHandlerAbstractTest {
 
     @Test
     fun twoStreamsInterleaved() {
-        openStream(12)
-        writeStream(12, "22")
+        val id1 = openStreamRemote()
+        writeStream(id1, "22")
 
         assertHandlerCount(1)
         assertLastMessage(0, 1, "22")
 
-        writeStream(12, "23")
+        writeStream(id1, "23")
         assertHandlerCount(1)
         assertLastMessage(0, 2, "23")
 
-        openStream(22)
-        writeStream(22, "33")
+        val id2 = openStreamRemote()
+        writeStream(id2, "33")
         assertHandlerCount(2)
         assertLastMessage(1, 1, "33")
 
-        writeStream(12, "24")
+        writeStream(id1, "24")
         assertHandlerCount(2)
         assertLastMessage(0, 3, "24")
 
-        writeStream(22, "34")
+        writeStream(id2, "34")
         assertHandlerCount(2)
         assertLastMessage(1, 2, "34")
 
         assertFalse(childHandlers[0].isInactivated)
-        assertTrue(childHandlers[0].exceptions.isEmpty())
         assertFalse(childHandlers[1].isInactivated)
-        assertTrue(childHandlers[1].exceptions.isEmpty())
     }
 
     @Test
     fun twoStreamsSequential() {
-        openStream(12)
-        writeStream(12, "22")
+        val id1 = openStreamRemote()
+        writeStream(id1, "22")
 
         assertHandlerCount(1)
         assertLastMessage(0, 1, "22")
 
-        writeStream(12, "23")
+        writeStream(id1, "23")
         assertHandlerCount(1)
         assertLastMessage(0, 2, "23")
 
-        writeStream(12, "24")
+        writeStream(id1, "24")
         assertHandlerCount(1)
         assertLastMessage(0, 3, "24")
 
-        writeStream(12, "25")
+        writeStream(id1, "25")
         assertHandlerCount(1)
         assertLastMessage(0, 4, "25")
 
         assertFalse(childHandlers[0].isInactivated)
-        resetStream(12)
+        resetStream(id1)
         assertTrue(childHandlers[0].isHandlerRemoved)
-        assertTrue(childHandlers[0].exceptions.isEmpty())
 
-        openStream(22)
-        writeStream(22, "33")
+        val id2 = openStreamRemote()
+        writeStream(id2, "33")
         assertHandlerCount(2)
         assertLastMessage(1, 1, "33")
 
-        writeStream(22, "34")
+        writeStream(id2, "34")
         assertHandlerCount(2)
         assertLastMessage(1, 2, "34")
 
         assertFalse(childHandlers[1].isInactivated)
-        resetStream(22)
+        resetStream(id2)
         assertTrue(childHandlers[1].isHandlerRemoved)
-        assertTrue(childHandlers[1].exceptions.isEmpty())
     }
 
     @Test
     fun streamIsReset() {
-        openStream(22)
+        val id1 = openStreamRemote()
         assertFalse(childHandlers[0].ctx.channel().closeFuture().isDone)
         assertFalse(childHandlers[0].isInactivated)
 
-        resetStream(22)
+        resetStream(id1)
         assertTrue(childHandlers[0].ctx.channel().closeFuture().isDone)
         assertTrue(childHandlers[0].isHandlerRemoved)
     }
 
     @Test
     fun streamIsResetWhenChannelIsClosed() {
-        openStream(22)
+        openStreamRemote()
         assertFalse(childHandlers[0].ctx.channel().closeFuture().isDone)
 
         ech.close().await()
 
         assertTrue(childHandlers[0].ctx.channel().closeFuture().isDone)
         assertTrue(childHandlers[0].isHandlerRemoved)
-        assertTrue(childHandlers[0].exceptions.isEmpty())
     }
 
     @Test
     fun cantReceiveOnResetStream() {
-        openStream(18)
-        resetStream(18)
+        val id1 = openStreamRemote()
+        resetStream(id1)
 
         assertThrows(Libp2pException::class.java) {
-            writeStream(18, "35")
+            writeStream(id1, "35")
         }
         assertTrue(childHandlers[0].isHandlerRemoved)
     }
 
     @Test
     fun cantReceiveOnClosedStream() {
-        openStream(18)
-        closeStream(18)
+        val id1 = openStreamRemote()
+        closeStream(id1)
 
         assertThrows(Libp2pException::class.java) {
-            writeStream(18, "35")
+            writeStream(id1, "35")
         }
         assertFalse(childHandlers[0].isInactivated)
     }
@@ -304,9 +310,15 @@ abstract class MuxHandlerAbstractTest {
     }
 
     @Test
-    fun canResetNonExistentStream() {
-        resetStream(99)
+    @SuppressWarnings("SwallowedException")
+    fun `resetting non existing stream doesnt close connection`() {
+        try {
+            resetStream(99)
+        } catch (e: UnknownStreamIdMuxerException) {
+            // Muxer is free to either throw an exception or just ignore
+        }
         assertHandlerCount(0)
+        assertThat(ech.isOpen).isTrue()
     }
 
     @Test
@@ -324,9 +336,19 @@ abstract class MuxHandlerAbstractTest {
     }
 
     @Test
+    fun `opening a stream with existing id causes connection close`() {
+        val id1 = openStreamRemote()
+        assertThrows(Libp2pException::class.java) {
+            openStreamRemote(id1)
+        }
+
+        assertThat(ech.isOpen).isFalse()
+    }
+
+    @Test
     fun `local create and after local disconnect should still read`() {
-        val handler = openStreamByLocal()
-        handler.ctx.writeAndFlush("1984".fromHex().toByteBuf(allocateBuf()))
+        val handler = openStreamLocal()
+        handler.ctx.writeAndFlush(allocateMessage("1984"))
         handler.ctx.disconnect().sync()
 
         val openFrame = readFrameOrThrow()
@@ -350,7 +372,7 @@ abstract class MuxHandlerAbstractTest {
 
     @Test
     fun `local create and after remote disconnect should still write`() {
-        val handler = openStreamByLocal()
+        val handler = openStreamLocal()
 
         val openFrame = readFrameOrThrow()
         assertThat(openFrame.flag).isEqualTo(Open)
@@ -362,7 +384,7 @@ abstract class MuxHandlerAbstractTest {
         assertThat(handler.isUnregistered).isFalse()
         assertThat(handler.userEvents).containsExactly(RemoteWriteClosed)
 
-        handler.ctx.writeAndFlush("1984".fromHex().toByteBuf(allocateBuf()))
+        handler.ctx.writeAndFlush(allocateMessage("1984"))
 
         val readFrame = readFrameOrThrow()
         assertThat(readFrame.flag).isEqualTo(Data)
@@ -372,7 +394,7 @@ abstract class MuxHandlerAbstractTest {
 
     @Test
     fun `test remote and local disconnect closes stream`() {
-        val handler = openStreamByLocal()
+        val handler = openStreamLocal()
         handler.ctx.disconnect().sync()
 
         readFrameOrThrow()
@@ -389,11 +411,11 @@ abstract class MuxHandlerAbstractTest {
 
     @Test
     fun `test large message is split onto slices`() {
-        val handler = openStreamByLocal()
+        val handler = openStreamLocal()
         readFrameOrThrow()
 
         val largeMessage = "42".repeat(maxFrameDataLength - 1) + "4344"
-        handler.ctx.writeAndFlush(largeMessage.fromHex().toByteBuf(allocateBuf()))
+        handler.ctx.writeAndFlush(allocateMessage(largeMessage))
 
         val dataFrame1 = readFrameOrThrow()
         assertThat(dataFrame1.data.fromHex())
@@ -412,35 +434,52 @@ abstract class MuxHandlerAbstractTest {
 
     @Test
     fun `should throw when writing to locally closed stream`() {
-        val handler = openStreamByLocal()
+        val handler = openStreamLocal()
         handler.ctx.disconnect()
 
         assertThrows(Exception::class.java) {
-            handler.ctx.writeAndFlush("42".fromHex().toByteBuf(allocateBuf())).sync()
+            handler.ctx.writeAndFlush(allocateMessage("42")).sync()
         }
     }
 
     @Test
     fun `should throw when writing to reset stream`() {
-        val handler = openStreamByLocal()
+        val handler = openStreamLocal()
         handler.ctx.close()
 
         assertThrows(Exception::class.java) {
-            handler.ctx.writeAndFlush("42".fromHex().toByteBuf(allocateBuf())).sync()
+            handler.ctx.writeAndFlush(allocateMessage("42")).sync()
         }
     }
 
     @Test
     fun `should throw when writing to closed connection`() {
-        val handler = openStreamByLocal()
+        val handler = openStreamLocal()
         ech.close().sync()
 
         assertThrows(Exception::class.java) {
-            handler.ctx.writeAndFlush("42".fromHex().toByteBuf(allocateBuf())).sync()
+            handler.ctx.writeAndFlush(allocateMessage("42")).sync()
         }
     }
 
-    class TestHandler : ChannelInboundHandlerAdapter() {
+    @Test
+    fun `test writing to remotely open stream upon activation`() {
+        activeEventHandlers += TestEventHandler {
+            val writePromise = it.ctx.writeAndFlush(allocateMessage("42"))
+            writePromise.sync()
+        }
+        val id1 = openStreamRemote()
+
+        val dataFrame = readFrameOrThrow()
+        assertThat(dataFrame.streamId).isEqualTo(id1)
+        assertThat(dataFrame.data).isEqualTo("42")
+    }
+
+    fun interface TestEventHandler {
+        fun handle(testHandler: TestHandler)
+    }
+
+    inner class TestHandler : ChannelInboundHandlerAdapter() {
         val inboundMessages = mutableListOf<String>()
         lateinit var ctx: ChannelHandlerContext
         var readCompleteEventCount = 0
@@ -461,7 +500,7 @@ abstract class MuxHandlerAbstractTest {
         override fun handlerAdded(ctx: ChannelHandlerContext) {
             assertFalse(isHandlerAdded)
             isHandlerAdded = true
-            println("MultiplexHandlerTest.handlerAdded")
+            println("MuxHandlerAbstractTest.handlerAdded")
             this.ctx = ctx
         }
 
@@ -469,57 +508,58 @@ abstract class MuxHandlerAbstractTest {
             assertTrue(isHandlerAdded)
             assertFalse(isRegistered)
             isRegistered = true
-            println("MultiplexHandlerTest.channelRegistered")
+            println("MuxHandlerAbstractTest.channelRegistered")
         }
 
         override fun channelActive(ctx: ChannelHandlerContext) {
             assertTrue(isRegistered)
             assertFalse(isActivated)
             isActivated = true
-            println("MultiplexHandlerTest.channelActive")
+            println("MuxHandlerAbstractTest.channelActive")
+            activeEventHandlers.forEach { it.handle(this) }
         }
 
         override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
             assertTrue(isActivated)
-            println("MultiplexHandlerTest.channelRead")
+            println("MuxHandlerAbstractTest.channelRead")
             msg as ByteBuf
             inboundMessages += msg.readAllBytesAndRelease().toHex()
         }
 
         override fun channelReadComplete(ctx: ChannelHandlerContext?) {
             readCompleteEventCount++
-            println("MultiplexHandlerTest.channelReadComplete")
+            println("MuxHandlerAbstractTest.channelReadComplete")
         }
 
         override fun userEventTriggered(ctx: ChannelHandlerContext, evt: Any) {
             userEvents += evt
-            println("MultiplexHandlerTest.userEventTriggered: $evt")
+            println("MuxHandlerAbstractTest.userEventTriggered: $evt")
         }
 
         override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
             exceptions += cause
-            println("MultiplexHandlerTest.exceptionCaught")
+            println("MuxHandlerAbstractTest.exceptionCaught")
         }
 
         override fun channelInactive(ctx: ChannelHandlerContext) {
             assertTrue(isActivated)
             assertFalse(isInactivated)
             isInactivated = true
-            println("MultiplexHandlerTest.channelInactive")
+            println("MuxHandlerAbstractTest.channelInactive")
         }
 
         override fun channelUnregistered(ctx: ChannelHandlerContext?) {
             assertTrue(isInactivated)
             assertFalse(isUnregistered)
             isUnregistered = true
-            println("MultiplexHandlerTest.channelUnregistered")
+            println("MuxHandlerAbstractTest.channelUnregistered")
         }
 
         override fun handlerRemoved(ctx: ChannelHandlerContext?) {
             assertTrue(isUnregistered)
             assertFalse(isHandlerRemoved)
             isHandlerRemoved = true
-            println("MultiplexHandlerTest.handlerRemoved")
+            println("MuxHandlerAbstractTest.handlerRemoved")
         }
     }
 

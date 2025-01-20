@@ -1,5 +1,6 @@
 package io.libp2p.etc.types
 
+import kotlin.properties.Delegates
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
@@ -39,18 +40,20 @@ fun cappedDouble(
 
 // thanks to https://stackoverflow.com/a/47948047/9630725
 class LazyMutable<T>(val initializer: () -> T, val rejectSetAfterGet: Boolean = false) : ReadWriteProperty<Any?, T> {
-    private object UNINITIALIZED_VALUE
-    private var prop: Any? = UNINITIALIZED_VALUE
+    private object UninitializedValue
+    private var prop: Any? = UninitializedValue
     private var readAccessed = false
 
     @Suppress("UNCHECKED_CAST")
     override fun getValue(thisRef: Any?, property: KProperty<*>): T {
-        return if (prop == UNINITIALIZED_VALUE) {
+        return if (prop == UninitializedValue) {
             synchronized(this) {
                 readAccessed = true
-                return if (prop == UNINITIALIZED_VALUE) initializer().also { prop = it } else prop as T
+                return if (prop == UninitializedValue) initializer().also { prop = it } else prop as T
             }
-        } else prop as T
+        } else {
+            prop as T
+        }
     }
 
     override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
@@ -88,5 +91,20 @@ data class CappedValueDelegate<C : Comparable<C>>(
         if (oldValue != value) {
             updateListener(value)
         }
+    }
+}
+
+fun <T : Any> Delegates.writeOnce(initialValue: T): ReadWriteProperty<Any?, T> = object : ReadWriteProperty<Any?, T> {
+    private var value: T = initialValue
+    private var wasSet = false
+
+    public override fun getValue(thisRef: Any?, property: KProperty<*>): T {
+        return value
+    }
+
+    public override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
+        if (wasSet) throw IllegalStateException("Property ${property.name} cannot be set more than once.")
+        this.value = value
+        wasSet = true
     }
 }

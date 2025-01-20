@@ -12,7 +12,9 @@ import java.util.concurrent.CompletableFuture
 
 class YamuxStreamMuxer(
     val inboundStreamHandler: StreamHandler<*>,
-    private val multistreamProtocol: MultistreamProtocol
+    private val multistreamProtocol: MultistreamProtocol,
+    private val maxBufferedConnectionWrites: Int,
+    private val ackBacklogLimit: Int
 ) : StreamMuxer, StreamMuxerDebug {
 
     override val protocolDescriptor = ProtocolDescriptor("/yamux/1.0.0")
@@ -21,7 +23,7 @@ class YamuxStreamMuxer(
     override fun initChannel(ch: P2PChannel, selectedProtocol: String): CompletableFuture<out StreamMuxer.Session> {
         val muxSessionReady = CompletableFuture<StreamMuxer.Session>()
 
-        val yamuxFrameCodec = YamuxFrameCodec(ch.isInitiator)
+        val yamuxFrameCodec = YamuxFrameCodec()
         ch.pushHandler(yamuxFrameCodec)
         muxFramesDebugHandler?.also { it.visit(ch as Connection) }
         ch.pushHandler(
@@ -30,7 +32,9 @@ class YamuxStreamMuxer(
                 yamuxFrameCodec.maxFrameDataLength,
                 muxSessionReady,
                 inboundStreamHandler,
-                ch.isInitiator
+                ch.isInitiator,
+                maxBufferedConnectionWrites,
+                ackBacklogLimit
             )
         )
 

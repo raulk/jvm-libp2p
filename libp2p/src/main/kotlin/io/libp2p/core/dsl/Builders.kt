@@ -8,7 +8,7 @@ import io.libp2p.core.ConnectionHandler
 import io.libp2p.core.Host
 import io.libp2p.core.P2PChannel
 import io.libp2p.core.Stream
-import io.libp2p.core.crypto.KEY_TYPE
+import io.libp2p.core.crypto.KeyType
 import io.libp2p.core.crypto.PrivKey
 import io.libp2p.core.crypto.generateKeyPair
 import io.libp2p.core.multiformats.Multiaddr
@@ -23,6 +23,7 @@ import io.libp2p.core.security.SecureChannel
 import io.libp2p.core.transport.Transport
 import io.libp2p.etc.types.lazyVar
 import io.libp2p.etc.types.toProtobuf
+import io.libp2p.etc.util.netty.LoggingHandlerShort
 import io.libp2p.host.HostImpl
 import io.libp2p.host.MemoryAddressBook
 import io.libp2p.network.NetworkImpl
@@ -33,6 +34,7 @@ import io.libp2p.transport.tcp.TcpTransport
 import io.netty.channel.ChannelHandler
 import io.netty.handler.logging.LogLevel
 import io.netty.handler.logging.LoggingHandler
+import java.util.concurrent.CopyOnWriteArrayList
 
 typealias TransportCtor = (ConnectionUpgrader) -> Transport
 typealias SecureChannelCtor = (PrivKey, List<StreamMuxer>) -> SecureChannel
@@ -173,7 +175,8 @@ open class Builder {
             }
         }
 
-        val muxers = muxers.map { it.createMuxer(streamMultistreamProtocol, protocols.values) }
+        val updatableProtocols: MutableList<ProtocolBinding<Any>> = CopyOnWriteArrayList(protocols.values)
+        val muxers = muxers.map { it.createMuxer(streamMultistreamProtocol, updatableProtocols) }
 
         val secureChannels = secureChannels.values.map { it(privKey, muxers) }
 
@@ -201,7 +204,7 @@ open class Builder {
             networkImpl,
             addressBook,
             network.listen.map { Multiaddr(it) },
-            protocols.values,
+            updatableProtocols,
             broadcastConnHandler,
             streamVisitors
         )
@@ -217,8 +220,8 @@ class NetworkConfigBuilder {
 class IdentityBuilder {
     var factory: IdentityFactory? = null
 
-    fun random() = random(KEY_TYPE.ECDSA)
-    fun random(keyType: KEY_TYPE): IdentityBuilder = apply { factory = { generateKeyPair(keyType).first } }
+    fun random() = random(KeyType.ECDSA)
+    fun random(keyType: KeyType): IdentityBuilder = apply { factory = { generateKeyPair(keyType).first } }
 }
 
 class AddressBookBuilder {
@@ -239,11 +242,13 @@ class DebugBuilder {
      * Could be primarily useful for security handshake debugging/monitoring
      */
     val beforeSecureHandler = DebugHandlerBuilder<Connection>("wire.sec.before")
+
     /**
      * Injects the [ChannelHandler] right after the connection cipher
      * to handle plain wire messages
      */
     val afterSecureHandler = DebugHandlerBuilder<Connection>("wire.sec.after")
+
     /**
      * Injects the [ChannelHandler] right after the [StreamMuxer] pipeline handler
      * It intercepts [io.libp2p.mux.MuxFrame] instances
@@ -268,6 +273,10 @@ class DebugHandlerBuilder<TChannel : P2PChannel>(var name: String) {
 
     fun addLogger(level: LogLevel, loggerName: String = name) {
         addNettyHandler(LoggingHandler(loggerName, level))
+    }
+
+    fun addCompactLogger(level: LogLevel, loggerName: String = name) {
+        addNettyHandler(LoggingHandlerShort(loggerName, level))
     }
 }
 

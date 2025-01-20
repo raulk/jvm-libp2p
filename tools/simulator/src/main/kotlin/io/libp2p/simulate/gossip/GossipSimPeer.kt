@@ -15,7 +15,7 @@ import java.util.concurrent.CompletableFuture
 class GossipSimPeer(
     override val simPeerId: Int,
     override val random: Random,
-    protocol: PubsubProtocol = PubsubProtocol.Gossip_V_1_1
+    protocol: PubsubProtocol = PubsubProtocol.Gossip_V_1_2
 ) : StreamSimPeer<Unit>(true, protocol.announceStr) {
 
     var routerBuilder = SimGossipRouterBuilder()
@@ -41,8 +41,11 @@ class GossipSimPeer(
         val logConnection = pubsubLogs(stream.remotePeerId())
         router.addPeerWithDebugHandler(
             stream,
-            if (logConnection)
-                LoggingHandler(name, LogLevel.ERROR) else null
+            if (logConnection) {
+                LoggingHandler(name, LogLevel.ERROR)
+            } else {
+                null
+            }
         )
         return dummy
     }

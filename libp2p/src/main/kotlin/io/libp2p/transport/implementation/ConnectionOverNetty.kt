@@ -30,8 +30,12 @@ open class ConnectionOverNetty(
         ch.attr(CONNECTION).set(this)
     }
 
-    fun setMuxerSession(ms: StreamMuxer.Session) { muxerSession = ms }
-    fun setSecureSession(ss: SecureChannel.Session) { secureSession = ss }
+    fun setMuxerSession(ms: StreamMuxer.Session) {
+        muxerSession = ms
+    }
+    fun setSecureSession(ss: SecureChannel.Session) {
+        secureSession = ss
+    }
 
     override fun muxerSession() = muxerSession
     override fun secureSession() = secureSession
@@ -43,10 +47,11 @@ open class ConnectionOverNetty(
         toMultiaddr(nettyChannel.remoteAddress() as InetSocketAddress)
 
     private fun toMultiaddr(addr: InetSocketAddress): Multiaddr {
-        if (transport is NettyTransport)
+        if (transport is NettyTransport) {
             return transport.toMultiaddr(addr)
-        else
+        } else {
             return toMultiaddrDefault(addr)
+        }
     }
 
     fun toMultiaddrDefault(addr: InetSocketAddress): Multiaddr {

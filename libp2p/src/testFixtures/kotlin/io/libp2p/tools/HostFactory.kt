@@ -2,7 +2,7 @@ package io.libp2p.tools
 
 import io.libp2p.core.Host
 import io.libp2p.core.PeerId
-import io.libp2p.core.crypto.KEY_TYPE
+import io.libp2p.core.crypto.KeyType
 import io.libp2p.core.crypto.PrivKey
 import io.libp2p.core.crypto.PubKey
 import io.libp2p.core.crypto.generateKeyPair
@@ -25,7 +25,7 @@ import java.util.concurrent.TimeUnit
 
 class HostFactory {
 
-    var keyType = KEY_TYPE.ECDSA
+    var keyType = KeyType.ECDSA
     var tcpPort = Random().nextInt(10_000) + 6000
     var transportCtor = ::TcpTransport
     var secureCtor: SecureChannelCtor = ::NoiseXXSecureChannel

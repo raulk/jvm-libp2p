@@ -1,26 +1,13 @@
+@file:Suppress("ktlint:standard:class-naming")
+
 package io.libp2p.pubsub.gossip
 
 import com.google.common.util.concurrent.AtomicDouble
+import com.google.protobuf.ByteString
 import io.libp2p.core.PeerId
-import io.libp2p.core.pubsub.MessageApi
-import io.libp2p.core.pubsub.RESULT_IGNORE
-import io.libp2p.core.pubsub.RESULT_INVALID
-import io.libp2p.core.pubsub.RESULT_VALID
-import io.libp2p.core.pubsub.Subscriber
-import io.libp2p.core.pubsub.ValidationResult
-import io.libp2p.core.pubsub.Validator
-import io.libp2p.core.pubsub.createPubsubApi
-import io.libp2p.etc.types.millis
-import io.libp2p.etc.types.minutes
-import io.libp2p.etc.types.seconds
-import io.libp2p.etc.types.times
-import io.libp2p.etc.types.toBytesBigEndian
-import io.libp2p.etc.types.toProtobuf
-import io.libp2p.etc.types.toWBytes
-import io.libp2p.pubsub.*
-import io.libp2p.pubsub.DeterministicFuzz.Companion.createGossipFuzzRouterFactory
-import io.libp2p.pubsub.DeterministicFuzz.Companion.createMockFuzzRouterFactory
-import io.libp2p.pubsub.gossip.builders.GossipRouterBuilder
+import io.libp2p.core.pubsub.*
+import io.libp2p.etc.types.*
+import io.libp2p.pubsub.MockRouter
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandler
@@ -28,10 +15,7 @@ import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelOutboundHandlerAdapter
 import io.netty.channel.ChannelPromise
 import io.netty.handler.logging.LogLevel
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNotNull
-import org.junit.jupiter.api.Assertions.assertNull
-import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import pubsub.pb.Rpc
 import java.nio.charset.StandardCharsets
@@ -40,49 +24,30 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.collections.List
+import kotlin.collections.component1
+import kotlin.collections.component2
+import kotlin.collections.count
+import kotlin.collections.distinct
+import kotlin.collections.filter
+import kotlin.collections.first
+import kotlin.collections.flatMap
+import kotlin.collections.forEach
+import kotlin.collections.getValue
+import kotlin.collections.intersect
+import kotlin.collections.map
+import kotlin.collections.mapValues
+import kotlin.collections.minus
+import kotlin.collections.mutableListOf
+import kotlin.collections.mutableMapOf
+import kotlin.collections.plusAssign
+import kotlin.collections.set
+import kotlin.collections.slice
+import kotlin.collections.take
+import kotlin.collections.toMap
+import kotlin.collections.withDefault
 
-class GossipV1_1Tests {
-
-    private val GossipScore.testPeerScores get() = (this as DefaultGossipScore).peerScores
-
-    private fun newProtoMessage(topic: Topic, seqNo: Long, data: ByteArray) =
-        Rpc.Message.newBuilder()
-            .addTopicIDs(topic)
-            .setSeqno(seqNo.toBytesBigEndian().toProtobuf())
-            .setData(data.toProtobuf())
-            .build()
-    private fun newMessage(topic: Topic, seqNo: Long, data: ByteArray) =
-        DefaultPubsubMessage(newProtoMessage(topic, seqNo, data))
-
-    protected fun getMessageId(msg: Rpc.Message): MessageId = msg.from.toWBytes() + msg.seqno.toWBytes()
-
-    class ManyRoutersTest(
-        val mockRouterCount: Int = 10,
-        val params: GossipParams = GossipParams(),
-        val scoreParams: GossipScoreParams = GossipScoreParams(),
-//            mockRouters: () -> List<MockRouter> = { (0 until mockRouterCount).map { MockRouter() } }
-    ) {
-        val fuzz = DeterministicFuzz()
-        val gossipRouterBuilderFactory = { GossipRouterBuilder(params = params, scoreParams = scoreParams) }
-        val router0 = fuzz.createTestRouter(createGossipFuzzRouterFactory(gossipRouterBuilderFactory))
-        val routers = (0 until mockRouterCount).map { fuzz.createTestRouter(createMockFuzzRouterFactory()) }
-        val connections = mutableListOf<SemiduplexConnection>()
-        val gossipRouter = router0.router as GossipRouter
-        val mockRouters = routers.map { it.router as MockRouter }
-
-        fun connectAll() = connect(routers.indices)
-        fun connect(routerIndexes: IntRange, outbound: Boolean = true): List<SemiduplexConnection> {
-            val list =
-                routers.slice(routerIndexes).map {
-                    if (outbound) router0.connectSemiDuplex(it, null, LogLevel.ERROR)
-                    else it.connectSemiDuplex(router0, null, LogLevel.ERROR)
-                }
-            connections += list
-            return list
-        }
-
-        fun getMockRouter(peerId: PeerId) = mockRouters[routers.indexOfFirst { it.peerId == peerId }]
-    }
+class GossipV1_1Tests : GossipTestsBase() {
 
     @Test
     fun selfSanityTest() {
@@ -92,21 +57,6 @@ class GossipV1_1Tests {
         val msg = newMessage("topic1", 0L, "Hello".toByteArray())
         test.gossipRouter.publish(msg)
         test.mockRouter.waitForMessage { it.publishCount > 0 }
-    }
-
-    class TwoRoutersTest(
-        val coreParams: GossipParams = GossipParams(),
-        val scoreParams: GossipScoreParams = GossipScoreParams(),
-        mockRouterFactory: DeterministicFuzzRouterFactory = createMockFuzzRouterFactory()
-    ) {
-        val fuzz = DeterministicFuzz()
-        val gossipRouterBuilderFactory = { GossipRouterBuilder(params = coreParams, scoreParams = scoreParams) }
-        val router1 = fuzz.createTestRouter(createGossipFuzzRouterFactory(gossipRouterBuilderFactory))
-        val router2 = fuzz.createTestRouter(mockRouterFactory)
-        val gossipRouter = router1.router as GossipRouter
-        val mockRouter = router2.router as MockRouter
-
-        val connection = router1.connectSemiDuplex(router2, null, LogLevel.ERROR)
     }
 
     @Test
@@ -141,7 +91,7 @@ class GossipV1_1Tests {
 
         val api = createPubsubApi(test.gossipRouter)
         val apiMessages = mutableListOf<MessageApi>()
-        api.subscribe(Subscriber { apiMessages += it }, io.libp2p.core.pubsub.Topic("topic2"))
+        api.subscribe(Subscriber { apiMessages += it }, Topic("topic2"))
 
         val msg1 = Rpc.RPC.newBuilder()
             .addPublish(newProtoMessage("topic2", 0L, "Hello-1".toByteArray()))
@@ -175,12 +125,13 @@ class GossipV1_1Tests {
                 super.initChannelWithHandler(streamHandler, handler)
             }
         }
+
         val test = TwoRoutersTest(mockRouterFactory = { exec, _, _ -> MalformedMockRouter(exec) })
         val mockRouter = test.router2.router as MalformedMockRouter
 
         val api = createPubsubApi(test.gossipRouter)
         val apiMessages = mutableListOf<MessageApi>()
-        api.subscribe(Subscriber { apiMessages += it }, io.libp2p.core.pubsub.Topic("topic1"))
+        api.subscribe(Subscriber { apiMessages += it }, Topic("topic1"))
 
         val msg1 = Rpc.RPC.newBuilder()
             .addPublish(newProtoMessage("topic1", 0L, "Hello-1".toByteArray()))
@@ -580,8 +531,9 @@ class GossipV1_1Tests {
 
     @Test
     fun testNotFloodPublish() {
+        val message = newMessage("topic1", 0L, "Hello-0".toByteArray())
         val appScore = mutableMapOf<PeerId, Double>().withDefault { 0.0 }
-        val coreParams = GossipParams(3, 3, 3, floodPublish = false)
+        val coreParams = GossipParams(3, 3, 3, floodPublishMaxMessageSizeThreshold = message.size - 1)
         val peerScoreParams = GossipPeerScoreParams(appSpecificScore = { appScore.getValue(it) })
         val scoreParams = GossipScoreParams(peerScoreParams = peerScoreParams)
         val test = ManyRoutersTest(params = coreParams, scoreParams = scoreParams)
@@ -595,7 +547,7 @@ class GossipV1_1Tests {
         val topicMesh = test.gossipRouter.mesh["topic1"]!!
         assertTrue(topicMesh.size > 0 && topicMesh.size < test.routers.size)
 
-        test.gossipRouter.publish(newMessage("topic1", 0L, "Hello-0".toByteArray()))
+        test.gossipRouter.publish(message)
 
         test.fuzz.timeController.addTime(50.millis)
 
@@ -607,8 +559,9 @@ class GossipV1_1Tests {
 
     @Test
     fun testFloodPublish() {
+        val message = newMessage("topic1", 0L, "Hello-0".toByteArray())
         val appScore = mutableMapOf<PeerId, Double>().withDefault { 0.0 }
-        val coreParams = GossipParams(3, 3, 3, floodPublish = true)
+        val coreParams = GossipParams(3, 3, 3, floodPublishMaxMessageSizeThreshold = message.size)
         val peerScoreParams = GossipPeerScoreParams(
             appSpecificScore = { appScore.getValue(it) },
             appSpecificWeight = 1.0
@@ -630,7 +583,7 @@ class GossipV1_1Tests {
         val topicMesh = test.gossipRouter.mesh["topic1"]!!.map { it.peerId }
         assertTrue(topicMesh.size > 0 && topicMesh.size < test.routers.size)
 
-        test.gossipRouter.publish(newMessage("topic1", 0L, "Hello-0".toByteArray()))
+        test.gossipRouter.publish(message)
 
         test.fuzz.timeController.addTime(50.millis)
 
@@ -696,8 +649,12 @@ class GossipV1_1Tests {
     fun testAdaptiveGossip() {
         val appScore = mutableMapOf<PeerId, Double>().withDefault { 0.0 }
         val coreParams = GossipParams(
-            3, 3, 3, DLazy = 3,
-            floodPublish = false, gossipFactor = 0.5
+            3,
+            3,
+            3,
+            DLazy = 3,
+            floodPublishMaxMessageSizeThreshold = NEVER_FLOOD_PUBLISH,
+            gossipFactor = 0.5
         )
         val peerScoreParams = GossipPeerScoreParams(
             appSpecificScore = { appScore.getValue(it) },
@@ -760,7 +717,7 @@ class GossipV1_1Tests {
     @Test
     fun testOutboundMeshQuotas1() {
         val appScore = mutableMapOf<PeerId, Double>().withDefault { 0.0 }
-        val coreParams = GossipParams(3, 3, 3, DLazy = 3, DOut = 1, floodPublish = false)
+        val coreParams = GossipParams(3, 3, 3, DLazy = 3, DOut = 1, floodPublishMaxMessageSizeThreshold = NEVER_FLOOD_PUBLISH)
         val peerScoreParams = GossipPeerScoreParams(appSpecificScore = { appScore.getValue(it) })
         val scoreParams = GossipScoreParams(peerScoreParams = peerScoreParams)
         val test = ManyRoutersTest(params = coreParams, scoreParams = scoreParams)
@@ -806,8 +763,13 @@ class GossipV1_1Tests {
     fun testOpportunisticGraft() {
         val appScore = mutableMapOf<PeerId, Double>().withDefault { 0.0 }
         val coreParams = GossipParams(
-            3, 3, 10, DLazy = 3, DOut = 1,
-            opportunisticGraftPeers = 2, opportunisticGraftTicks = 60
+            3,
+            3,
+            10,
+            DLazy = 3,
+            DOut = 1,
+            opportunisticGraftPeers = 2,
+            opportunisticGraftTicks = 60
         )
         val peerScoreParams = GossipPeerScoreParams(
             appSpecificScore = { appScore.getValue(it) },
@@ -970,8 +932,11 @@ class GossipV1_1Tests {
 
         val validationResult = CompletableFuture<ValidationResult>()
         val receivedMessages = LinkedBlockingQueue<MessageApi>()
-        val slowValidator = Validator { receivedMessages += it; validationResult }
-        api.subscribe(slowValidator, io.libp2p.core.pubsub.Topic("topic1"))
+        val slowValidator = Validator {
+            receivedMessages += it
+            validationResult
+        }
+        api.subscribe(slowValidator, Topic("topic1"))
         test.mockRouters.forEach { it.subscribe("topic1") }
 
         val gossiper = test.mockRouters[0]
@@ -1122,5 +1087,349 @@ class GossipV1_1Tests {
             .flatMap { it.messageIDsList }
         assertEquals(5, iWandIds1.size)
         assertEquals(5, iWandIds1.distinct().size)
+    }
+
+    @Test
+    fun testMaxPeersSentInPruneMsg() {
+        val test = TwoRoutersTest()
+
+        val topic = "topic1"
+        test.mockRouter.subscribe(topic)
+        test.gossipRouter.subscribe(topic)
+
+        for (i in 0..20) {
+            val router = test.fuzz.createTestRouter(test.mockRouterFactory)
+            (router.router as MockRouter).subscribe(topic)
+            test.router1.connectSemiDuplex(router, null, LogLevel.ERROR)
+        }
+
+        // 2 heartbeats - the topic should be GRAFTed
+        test.fuzz.timeController.addTime(2.seconds)
+        test.mockRouter.waitForMessage { it.hasControl() && it.control.graftCount > 0 }
+
+        test.gossipRouter.unsubscribe(topic)
+        test.fuzz.timeController.addTime(2.seconds)
+        assertEquals(
+            1,
+            test.mockRouter.inboundMessages.count {
+                it.hasControl() && it.control.pruneCount == 1 &&
+                    it.control.getPrune(0).peersCount == test.gossipRouter.params.maxPeersSentInPruneMsg
+            }
+        )
+    }
+
+    @Test
+    fun testMaxPeersAcceptedInPruneMsg() {
+        val test = TwoRoutersTest()
+        val topic = "topic1"
+
+        test.mockRouter.subscribe(topic)
+        test.gossipRouter.subscribe(topic)
+
+        // 2 heartbeats - the topic should be GRAFTed
+        test.fuzz.timeController.addTime(2.seconds)
+
+        test.mockRouter.sendToSingle(
+            createPruneMessage(topic, test.gossipRouter.params.maxPeersAcceptedInPruneMsg + 1)
+        )
+
+        // prune message should be dropped because too many peers
+        assertEquals(1, test.gossipRouter.mesh[topic]!!.size)
+
+        test.mockRouter.sendToSingle(
+            createPruneMessage(topic, test.gossipRouter.params.maxPeersAcceptedInPruneMsg)
+        )
+
+        // prune message should now be processed
+        assertEquals(0, test.gossipRouter.mesh[topic]!!.size)
+    }
+
+    @Test
+    fun `when a peer leaves the mesh it should still be considered for publishing`() {
+        val test = TwoRoutersTest()
+        val topic = "topic1"
+
+        test.mockRouter.subscribe(topic)
+        test.gossipRouter.subscribe(topic)
+
+        // 2 heartbeats - the topic should be GRAFTed
+        test.fuzz.timeController.addTime(2.seconds)
+
+        assertTrue((test.gossipRouter.mesh[topic]?.size ?: 0) == 1)
+
+        // remote peer leaves the mesh
+        test.mockRouter.sendToSingle(createPruneMessage(topic))
+        test.fuzz.timeController.addTime(1.seconds)
+
+        assertTrue((test.gossipRouter.mesh[topic]?.size ?: 0) == 0)
+
+        val message1 = newMessage(topic, 0L, "Hello-0".toByteArray())
+        test.gossipRouter.publish(message1)
+
+        test.mockRouter.waitForMessage { it.publishCount > 0 }
+    }
+
+    @Test
+    fun `should publish to all mesh peers when mesh exceeds D`() {
+        val gossipParams = GossipParams(D = 6, DHigh = 10)
+        val test = ManyRoutersTest(params = gossipParams, mockRouterCount = gossipParams.DHigh)
+        val topic = "topic1"
+        test.connectAll()
+
+        test.mockRouters.forEach {
+            it.subscribe(topic)
+        }
+        test.gossipRouter.subscribe(topic)
+
+        // 2 heartbeats - the topic should be GRAFTed
+        test.fuzz.timeController.addTime(2.seconds)
+
+        assertTrue((test.gossipRouter.mesh[topic]?.size ?: 0) == gossipParams.D)
+
+        test.mockRouters.forEach {
+            it.sendToSingle(createGraftMessage(topic))
+        }
+
+        test.fuzz.timeController.addTime(2.seconds)
+
+        assertTrue((test.gossipRouter.mesh[topic]?.size ?: 0) == gossipParams.DHigh)
+
+        // remote peer leaves the mesh
+        val message1 = newMessage(topic, 0L, "Hello-0".toByteArray())
+        test.gossipRouter.publish(message1)
+
+        val routerReceivedMessageCount =
+            test.mockRouters.count { mockRouter ->
+                mockRouter.inboundMessages.any { msg ->
+                    msg.publishCount > 0
+                }
+            }
+
+        assertTrue(routerReceivedMessageCount == gossipParams.DHigh)
+    }
+
+    @Test
+    fun `publishing should collect at least D peers if mesh is smaller`() {
+        val params = GossipParams()
+
+        val test = ManyRoutersTest(params = params, mockRouterCount = params.D)
+        val topic = "topic1"
+        test.connectAll()
+
+        test.mockRouters.forEach { it.subscribe(topic) }
+        test.gossipRouter.subscribe(topic)
+
+        // 2 heartbeats - the topic should be GRAFTed
+        test.fuzz.timeController.addTime(2.seconds)
+
+        val topicMeshRouters = test.gossipRouter.mesh[topic]!!
+        assertTrue((topicMeshRouters.size) >= params.DLow)
+
+        // leave just 2 peers in the mesh
+        topicMeshRouters.drop(2)
+            .forEach {
+                test.getMockRouter(it.peerId).sendToSingle(createPruneMessage(topic))
+            }
+        test.fuzz.timeController.addTime(1.seconds)
+
+        assertTrue((test.gossipRouter.mesh[topic]?.size ?: 0) == 2)
+
+        val message1 = newMessage(topic, 0L, "Hello-0".toByteArray())
+        test.gossipRouter.publish(message1)
+
+        val routerReceivedMessageCount =
+            test.mockRouters.count { mockRouter ->
+                mockRouter.inboundMessages.any { msg ->
+                    msg.publishCount > 0
+                }
+            }
+
+        assertTrue(routerReceivedMessageCount >= params.D)
+    }
+
+    @Test
+    fun `publishing should collect at least D peers if mesh is smaller and prefer well scored peers`() {
+        val params = GossipParams()
+        val peerAppScores = mutableMapOf<PeerId, Int>()
+        val gossipScoreParams = GossipScoreParams(
+            peerScoreParams = GossipPeerScoreParams(
+                appSpecificScore = {
+                    peerAppScores[it]?.toDouble() ?: 0.0
+                },
+                appSpecificWeight = 1.0
+            )
+        )
+
+        val test = ManyRoutersTest(params = params, scoreParams = gossipScoreParams, mockRouterCount = 10)
+        val topic = "topic1"
+        test.connectAll()
+
+        test.mockRouters.forEach { it.subscribe(topic) }
+        test.gossipRouter.subscribe(topic)
+
+        // 2 heartbeats - the topic should be GRAFTed
+        test.fuzz.timeController.addTime(2.seconds)
+
+        val topicMeshRouters = test.gossipRouter.mesh[topic]!!.toList()
+        assertTrue((topicMeshRouters.size) == params.D)
+
+        // leave just 2 peers in the mesh
+        topicMeshRouters.drop(2)
+            .forEach {
+                test.getMockRouter(it.peerId).sendToSingle(createPruneMessage(topic))
+            }
+        // downscore all peers except 5
+        val goodScoredPeers = topicMeshRouters.take(5).map { it.peerId }.toSet()
+        test.routers
+            .map { it.peerId }
+            .filter { it !in goodScoredPeers }
+            .forEach { peerAppScores[it] = -gossipScoreParams.publishThreshold.toInt() - 1 }
+
+        // for D = 6: 2 peers in the mesh + 3 peers outside of mesh + others are significantly downscored
+        test.fuzz.timeController.addTime(1.seconds)
+
+        assertTrue((test.gossipRouter.mesh[topic]?.size ?: 0) == 2)
+
+        val message1 = newMessage(topic, 0L, "Hello-0".toByteArray())
+        test.gossipRouter.publish(message1)
+
+        // router should take 2 mesh peers, 3 well scored peers and 1 peer scored below publishThreshold
+        val peersReceivedMessage = test.routers
+            .filter {
+                val mockRouter = it.router as MockRouter
+                mockRouter.inboundMessages.any { msg ->
+                    msg.publishCount > 0
+                }
+            }
+            .map { it.peerId }
+
+        assertTrue(peersReceivedMessage.size == params.D)
+        assertTrue(peersReceivedMessage.containsAll(goodScoredPeers))
+    }
+
+    @Test
+    fun `should always flood publish to subscribed direct peers`() {
+        val message = newMessage("topic1", 0L, "Hello-0".toByteArray())
+        val appScore = mutableMapOf<PeerId, Double>().withDefault { 0.0 }
+        val directPeers = mutableSetOf<PeerId>()
+        val coreParams = GossipParams(3, 3, 3, floodPublishMaxMessageSizeThreshold = ALWAYS_FLOOD_PUBLISH)
+        val peerScoreParams = GossipPeerScoreParams(
+            appSpecificScore = { appScore.getValue(it) },
+            appSpecificWeight = 1.0,
+            isDirect = { directPeers.contains(it) }
+        )
+        val scoreParams = GossipScoreParams(
+            peerScoreParams = peerScoreParams,
+            graylistThreshold = -15.0,
+            publishThreshold = -10.0,
+        )
+        val test = ManyRoutersTest(mockRouterCount = 10, params = coreParams, scoreParams = scoreParams)
+        test.connectAll()
+
+        test.gossipRouter.subscribe("topic1")
+        test.routers.slice(0..5).forEach {
+            it.router.subscribe("topic1")
+        }
+
+        test.routers.slice(1..6).forEach {
+            directPeers.add(it.peerId)
+        }
+
+        // now only peers from 1 to 5 are direct peers subscribed to the topic
+
+        test.fuzz.timeController.addTime(2.seconds)
+
+        // let's down score all peers
+        test.routers.forEach {
+            appScore[it.peerId] = -20.0
+        }
+        test.gossipRouter.publish(message)
+
+        test.fuzz.timeController.addTime(50.millis)
+
+        val publishedCount = test.mockRouters.flatMap { it.inboundMessages }.count { it.publishCount > 0 }
+
+        // only subscribed direct peers should receive the message
+        assertEquals(5, publishedCount)
+    }
+
+    @Test
+    fun `should always publish to subscribed direct peers`() {
+        val message = newMessage("topic1", 0L, "Hello-0".toByteArray())
+        val appScore = mutableMapOf<PeerId, Double>().withDefault { 0.0 }
+        val directPeers = mutableSetOf<PeerId>()
+        val coreParams = GossipParams(3, 3, 3, floodPublishMaxMessageSizeThreshold = NEVER_FLOOD_PUBLISH)
+        val peerScoreParams = GossipPeerScoreParams(
+            appSpecificScore = { appScore.getValue(it) },
+            appSpecificWeight = 1.0,
+            isDirect = { directPeers.contains(it) }
+        )
+        val scoreParams = GossipScoreParams(
+            peerScoreParams = peerScoreParams,
+            graylistThreshold = -15.0,
+            publishThreshold = -10.0,
+        )
+        val test = ManyRoutersTest(mockRouterCount = 10, params = coreParams, scoreParams = scoreParams)
+        test.connectAll()
+
+        test.gossipRouter.subscribe("topic1")
+
+        test.routers.slice(0..5).forEach {
+            it.router.subscribe("topic1")
+        }
+        test.routers.slice(1..6).forEach {
+            directPeers.add(it.peerId)
+        }
+
+        // now only peers from 1 to 5 are direct peers subscribed to the topic
+        val subscribedDirectPeers = test.routers.slice(1..5).map { it.peerId }
+
+        test.fuzz.timeController.addTime(2.seconds)
+
+        // let's down score all direct peers
+        directPeers.forEach {
+            appScore[it] = -20.0
+        }
+
+        val topicMeshRouters = test.gossipRouter.mesh["topic1"]!!.toList()
+
+        // the mesh is strictly smaller than the number of subscribed direct peers
+        assertTrue(topicMeshRouters.size < subscribedDirectPeers.size)
+
+        val expectedPublishedCount = topicMeshRouters.map { it.peerId }.plus(subscribedDirectPeers).distinct().size
+
+        test.gossipRouter.publish(message)
+
+        test.fuzz.timeController.addTime(50.millis)
+
+        val publishedCount = test.mockRouters.flatMap { it.inboundMessages }.count { it.publishCount > 0 }
+
+        assertEquals(expectedPublishedCount, publishedCount)
+    }
+
+    private fun createGraftMessage(topic: String): Rpc.RPC {
+        return Rpc.RPC.newBuilder().setControl(
+            Rpc.ControlMessage.newBuilder().addGraft(
+                Rpc.ControlGraft.newBuilder()
+                    .setTopicID(topic)
+            )
+        ).build()
+    }
+
+    private fun createPruneMessage(topic: String, pxPeersCount: Int = 0): Rpc.RPC {
+        val peerInfos = List(pxPeersCount) {
+            Rpc.PeerInfo.newBuilder()
+                .setPeerID(PeerId.random().bytes.toProtobuf())
+                .setSignedPeerRecord(ByteString.EMPTY)
+                .build()
+        }
+        return Rpc.RPC.newBuilder().setControl(
+            Rpc.ControlMessage.newBuilder().addPrune(
+                Rpc.ControlPrune.newBuilder()
+                    .setTopicID(topic)
+                    .setBackoff(10)
+                    .addAllPeers(peerInfos)
+            )
+        ).build()
     }
 }

@@ -1,7 +1,7 @@
 package io.libp2p.mux.yamux
 
 import io.libp2p.core.ProtocolViolationException
-import io.libp2p.etc.util.netty.mux.MuxId
+import io.libp2p.mux.yamux.YamuxFlag.Companion.toInt
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
@@ -13,7 +13,6 @@ const val DEFAULT_MAX_YAMUX_FRAME_DATA_LENGTH = 1 shl 20
  * A Netty codec implementation that converts [YamuxFrame] instances to [ByteBuf] and vice-versa.
  */
 class YamuxFrameCodec(
-    val isInitiator: Boolean,
     val maxFrameDataLength: Int = DEFAULT_MAX_YAMUX_FRAME_DATA_LENGTH
 ) : ByteToMessageCodec<YamuxFrame>() {
 
@@ -26,10 +25,10 @@ class YamuxFrameCodec(
      */
     override fun encode(ctx: ChannelHandlerContext, msg: YamuxFrame, out: ByteBuf) {
         out.writeByte(0) // version
-        out.writeByte(msg.type)
-        out.writeShort(msg.flags)
+        out.writeByte(msg.type.intValue)
+        out.writeShort(msg.flags.toInt())
         out.writeInt(msg.id.id.toInt())
-        out.writeInt(msg.data?.readableBytes() ?: msg.lenData.toInt())
+        out.writeInt(msg.data?.readableBytes() ?: msg.length.toInt())
         out.writeBytes(msg.data ?: Unpooled.EMPTY_BUFFER)
     }
 
@@ -42,32 +41,47 @@ class YamuxFrameCodec(
      */
     override fun decode(ctx: ChannelHandlerContext, msg: ByteBuf, out: MutableList<Any>) {
         while (msg.isReadable) {
-            if (msg.readableBytes() < 12)
+            if (msg.readableBytes() < 12) {
                 return
+            }
             val readerIndex = msg.readerIndex()
             msg.readByte(); // version always 0
             val type = msg.readUnsignedByte()
+            val yamuxType = YamuxType.fromInt(type.toInt())
             val flags = msg.readUnsignedShort()
             val streamId = msg.readUnsignedInt()
-            val lenData = msg.readUnsignedInt()
-            if (type.toInt() != YamuxType.DATA) {
-                val yamuxFrame = YamuxFrame(MuxId(ctx.channel().id(), streamId, isInitiator.xor(streamId.mod(2).equals(1)).not()), type.toInt(), flags, lenData)
+            val length = msg.readUnsignedInt()
+            val yamuxId = YamuxId(ctx.channel().id(), streamId)
+            val yamuxFlags = YamuxFlag.fromInt(flags)
+            if (yamuxType != YamuxType.DATA) {
+                val yamuxFrame = YamuxFrame(
+                    yamuxId,
+                    yamuxType,
+                    yamuxFlags,
+                    length
+                )
                 out.add(yamuxFrame)
                 continue
             }
-            if (lenData > maxFrameDataLength) {
+            if (length > maxFrameDataLength) {
                 msg.skipBytes(msg.readableBytes())
-                throw ProtocolViolationException("Yamux frame is too large: $lenData")
+                throw ProtocolViolationException("Yamux frame is too large: $length")
             }
-            if (msg.readableBytes() < lenData) {
+            if (msg.readableBytes() < length) {
                 // not enough data to read the frame content
                 // will wait for more ...
                 msg.readerIndex(readerIndex)
                 return
             }
-            val data = msg.readSlice(lenData.toInt())
+            val data = msg.readSlice(length.toInt())
             data.retain() // MessageToMessageCodec releases original buffer, but it needs to be relayed
-            val yamuxFrame = YamuxFrame(MuxId(ctx.channel().id(), streamId, isInitiator.xor(streamId.mod(2).equals(1)).not()), type.toInt(), flags, lenData, data)
+            val yamuxFrame = YamuxFrame(
+                yamuxId,
+                yamuxType,
+                yamuxFlags,
+                length,
+                data
+            )
             out.add(yamuxFrame)
         }
     }

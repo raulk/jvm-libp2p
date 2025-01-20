@@ -1,5 +1,6 @@
 package io.libp2p.pubsub.gossip
 
+import io.libp2p.pubsub.Topic
 import io.libp2p.pubsub.gossip.builders.GossipParamsBuilder
 import io.libp2p.pubsub.gossip.builders.GossipRouterBuilder
 import io.libp2p.tools.protobuf.RpcBuilder
@@ -15,7 +16,7 @@ class GossipRouterListLimitsTest {
     private val maxIWantMessageIds = 14
     private val maxGraftMessages = 15
     private val maxPruneMessages = 16
-    private val maxPeersPerPruneMessage = 17
+    private val maxPeersAcceptedInPruneMsg = 17
 
     private val gossipParamsWithLimits = GossipParamsBuilder()
         .maxPublishedMessages(maxPublishedMessages)
@@ -25,7 +26,7 @@ class GossipRouterListLimitsTest {
         .maxIWantMessageIds(maxIWantMessageIds)
         .maxGraftMessages(maxGraftMessages)
         .maxPruneMessages(maxPruneMessages)
-        .maxPeersPerPruneMessage(maxPeersPerPruneMessage)
+        .maxPeersAcceptedInPruneMsg(maxPeersAcceptedInPruneMsg)
         .build()
 
     private val gossipParamsNoLimits = GossipParamsBuilder()
@@ -34,6 +35,8 @@ class GossipRouterListLimitsTest {
 
     private val routerWithLimits = GossipRouterBuilder(params = gossipParamsWithLimits).build()
     private val routerWithNoLimits = GossipRouterBuilder(params = gossipParamsNoLimits).build()
+
+    private val topic: Topic = "topic1"
 
     @Test
     fun validateProtobufLists_validMessage() {
@@ -44,7 +47,7 @@ class GossipRouterListLimitsTest {
 
     @Test
     fun validateProtobufLists_validMessageWithLargeLists_noLimits() {
-        val msg = fullMsgBuilder(20).build()
+        val msg = fullMsgBuilder(16).build()
 
         Assertions.assertThat(routerWithNoLimits.validateMessageListLimits(msg)).isTrue()
     }
@@ -96,7 +99,7 @@ class GossipRouterListLimitsTest {
     @Test
     fun validateProtobufLists_tooManyIHaves() {
         val builder = fullMsgBuilder()
-        builder.addIHaves(maxIHaveLength, 1)
+        builder.addIHaves(maxIHaveLength, 1, topic)
         val msg = builder.build()
 
         Assertions.assertThat(routerWithLimits.validateMessageListLimits(msg)).isFalse()
@@ -105,7 +108,7 @@ class GossipRouterListLimitsTest {
     @Test
     fun validateProtobufLists_tooManyIHaveMsgIds() {
         val builder = fullMsgBuilder()
-        builder.addIHaves(1, maxIHaveLength)
+        builder.addIHaves(1, maxIHaveLength, topic)
         val msg = builder.build()
 
         Assertions.assertThat(routerWithLimits.validateMessageListLimits(msg)).isFalse()
@@ -148,9 +151,9 @@ class GossipRouterListLimitsTest {
     }
 
     @Test
-    fun validateProtobufLists_tooManyPrunePeers() {
+    fun validateProtobufLists_tooManyPeersToAcceptInPruneMsg() {
         val builder = fullMsgBuilder()
-        builder.addPrunes(1, maxPeersPerPruneMessage + 1)
+        builder.addPrunes(1, maxPeersAcceptedInPruneMsg + 1)
         val msg = builder.build()
 
         Assertions.assertThat(routerWithLimits.validateMessageListLimits(msg)).isFalse()
@@ -186,7 +189,7 @@ class GossipRouterListLimitsTest {
     @Test
     fun validateProtobufLists_maxIHaves() {
         val builder = fullMsgBuilder()
-        builder.addIHaves(maxIHaveLength - 1, 1)
+        builder.addIHaves(maxIHaveLength - 1, 1, topic)
         val msg = builder.build()
 
         Assertions.assertThat(routerWithLimits.validateMessageListLimits(msg)).isTrue()
@@ -195,7 +198,7 @@ class GossipRouterListLimitsTest {
     @Test
     fun validateProtobufLists_maxIHaveMsgIds() {
         val builder = fullMsgBuilder()
-        builder.addIHaves(1, maxIHaveLength - 1)
+        builder.addIHaves(1, maxIHaveLength - 1, topic)
         val msg = builder.build()
 
         Assertions.assertThat(routerWithLimits.validateMessageListLimits(msg)).isTrue()
@@ -238,9 +241,9 @@ class GossipRouterListLimitsTest {
     }
 
     @Test
-    fun validateProtobufLists_maxPrunePeers() {
+    fun validateProtobufLists_maxPeersAcceptedInPruneMsg() {
         val builder = fullMsgBuilder()
-        builder.addPrunes(1, maxPeersPerPruneMessage - 1)
+        builder.addPrunes(1, maxPeersAcceptedInPruneMsg - 1)
         val msg = builder.build()
 
         Assertions.assertThat(routerWithLimits.validateMessageListLimits(msg)).isTrue()
@@ -256,7 +259,7 @@ class GossipRouterListLimitsTest {
         // Add some data to all possible fields
         builder.addSubscriptions(listSize)
         builder.addPublishMessages(listSize, listSize)
-        builder.addIHaves(listSize, listSize)
+        builder.addIHaves(listSize, listSize, topic)
         builder.addIWants(listSize, listSize)
         builder.addGrafts(listSize)
         builder.addPrunes(listSize, listSize)
