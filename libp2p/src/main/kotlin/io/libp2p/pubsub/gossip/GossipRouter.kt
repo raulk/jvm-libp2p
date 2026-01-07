@@ -194,6 +194,24 @@ open class GossipRouter(
         super.onPeerActive(peer)
         eventBroadcaster.notifyConnected(peer.peerId, peer.getRemoteAddress())
         heartbeatTask.hashCode() // force lazy initialization
+
+        // Send ControlExtensions to advertise partial message support
+        if (partialMessageExtension != null) {
+            sendPartialMessagesExtensionCapability(peer)
+        }
+    }
+
+    /**
+     * Sends a ControlExtensions message to advertise partial message support.
+     */
+    private fun sendPartialMessagesExtensionCapability(peer: PeerHandler) {
+        val rpc = Rpc.RPC.newBuilder().setControl(
+            Rpc.ControlMessage.newBuilder().setExtensions(
+                Rpc.ControlExtensions.newBuilder()
+                    .setPartialMessages(true)
+            )
+        ).build()
+        send(peer, rpc)
     }
 
     override fun notifyUnseenMessage(peer: PeerHandler, msg: PubsubMessage) {
@@ -414,6 +432,13 @@ open class GossipRouter(
         ctrl.run {
             (graftList + pruneList + ihaveList + iwantList + idontwantList)
         }.forEach { processControlMessage(it, receivedFrom) }
+
+        // Process ControlExtensions for partial message capability
+        if (ctrl.hasExtensions() && ctrl.extensions.partialMessages) {
+            // Peer advertises partial message support
+            // This is used by Go implementation to signal partial capability
+            logger.trace("Peer {} advertises partial message support via ControlExtensions", receivedFrom.peerId)
+        }
     }
 
     override fun broadcastInbound(msgs: List<PubsubMessage>, receivedFrom: PeerHandler) {

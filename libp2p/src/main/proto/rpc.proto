@@ -32,6 +32,11 @@ message ControlMessage {
 	repeated ControlGraft graft = 3;
 	repeated ControlPrune prune = 4;
 	repeated ControlIDontWant idontwant = 5;
+	optional ControlExtensions extensions = 6;
+}
+
+message ControlExtensions {
+	optional bool partialMessages = 10;
 }
 
 message ControlIHave {
